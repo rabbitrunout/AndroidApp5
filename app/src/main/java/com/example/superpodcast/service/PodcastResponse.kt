@@ -10,5 +10,12 @@ data class PodcastDto(
     val collectionName: String?,
     val artistName: String?,
     val artworkUrl100: String?,
-    val feedUrl: String?
+    val feedUrl: String?,
+
+    // ✅ добавили для деталей
+    val releaseDate: String?,
+    val primaryGenreName: String?,
+    val country: String?,
+    val trackCount: Int?,
+    val collectionViewUrl: String?
 )

@@ -82,6 +82,7 @@ dependencies {
 
 // RSS parser (простая библиотека)
     implementation("com.prof18.rssparser:rssparser:6.0.8")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Tests
     testImplementation(libs.junit)

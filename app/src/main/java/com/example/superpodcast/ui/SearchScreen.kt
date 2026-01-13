@@ -1,16 +1,7 @@
 package com.example.superpodcast.ui
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -19,28 +10,10 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.Card
-import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.superpodcast.model.PodcastSummaryViewData
@@ -53,16 +26,11 @@ import kotlinx.coroutines.launch
 @Composable
 fun SearchScreen(
     vm: SearchViewModel,
+    player: PlayerManager,                 // ✅ shared player
     initialTerm: String = "",
-    onBack: () -> Unit = {}
+    onBack: () -> Unit = {},
+    onOpenDetails: (PodcastSummaryViewData) -> Unit
 ) {
-    val context = LocalContext.current
-    val player = remember { PlayerManager(context) }
-
-    DisposableEffect(Unit) {
-        onDispose { player.release() }
-    }
-
     var term by remember { mutableStateOf(initialTerm) }
     var regex by remember { mutableStateOf(".*") }
     var minWordsText by remember { mutableStateOf("1") }
@@ -71,15 +39,17 @@ fun SearchScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var results by remember { mutableStateOf<List<PodcastSummaryViewData>>(emptyList()) }
 
-    // mini-player state
     var nowTitle by remember { mutableStateOf<String?>(null) }
     var nowAuthor by remember { mutableStateOf<String?>(null) }
-    var nowFeedUrl by remember { mutableStateOf<String?>(null) } // identify selected podcast
+    var nowFeedUrl by remember { mutableStateOf<String?>(null) }
 
-    // for UI refresh
     var isPlaying by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
+
+    fun refreshPlayingState() {
+        isPlaying = player.isPlaying()
+    }
 
     fun runSearch() {
         val q = term.trim()
@@ -105,12 +75,33 @@ fun SearchScreen(
         }
     }
 
-    LaunchedEffect(initialTerm) {
-        if (initialTerm.isNotBlank()) runSearch()
+    fun playLatest(feedUrl: String, title: String, author: String) {
+        scope.launch {
+            try {
+                error = null
+                loading = true
+
+                val audioUrl = vm.getLatestEpisodeAudioUrl(feedUrl)
+                if (audioUrl.isNullOrBlank()) {
+                    error = "No playable audio found for this podcast"
+                } else {
+                    nowFeedUrl = feedUrl
+                    nowTitle = title
+                    nowAuthor = author
+
+                    player.play(audioUrl)
+                    refreshPlayingState()
+                }
+            } catch (e: Exception) {
+                error = e.message ?: "Failed to play"
+            } finally {
+                loading = false
+            }
+        }
     }
 
-    fun refreshPlayingState() {
-        isPlaying = player.isPlaying()
+    LaunchedEffect(initialTerm) {
+        if (initialTerm.isNotBlank()) runSearch()
     }
 
     Scaffold(
@@ -130,7 +121,6 @@ fun SearchScreen(
             )
         },
         bottomBar = {
-            // Show mini-player only when we have something selected
             if (nowFeedUrl != null && nowTitle != null) {
                 MiniPlayerBar(
                     title = nowTitle ?: "",
@@ -140,9 +130,9 @@ fun SearchScreen(
                         if (player.isPlaying()) {
                             player.pause()
                         } else {
-                            // if we have currentUrl we can resume
                             val url = player.currentUrl
                             if (!url.isNullOrBlank()) player.play(url)
+                            else playLatest(nowFeedUrl!!, nowTitle ?: "", nowAuthor ?: "")
                         }
                         refreshPlayingState()
                     },
@@ -156,7 +146,7 @@ fun SearchScreen(
                 )
             }
         }
-    ) { padding: PaddingValues ->
+    ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -188,63 +178,18 @@ fun SearchScreen(
                 singleLine = true
             )
 
-            if (loading) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
+            if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
 
             if (error != null) {
-                Text(
-                    text = "Error: $error",
-                    color = MaterialTheme.colorScheme.error
-                )
+                Text("Error: $error", color = MaterialTheme.colorScheme.error)
             }
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(results) { item ->
-                    val isThisSelected = (nowFeedUrl == item.feedUrl)
-                    val subtitle = if (isThisSelected && player.isPlaying()) "▶ Playing" else "Tap to play / pause"
-
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                scope.launch {
-                                    try {
-                                        error = null
-
-                                        // If user taps the same selected podcast:
-                                        if (isThisSelected) {
-                                            if (player.isPlaying()) {
-                                                player.pause()
-                                            } else {
-                                                val url = player.currentUrl
-                                                if (!url.isNullOrBlank()) player.play(url)
-                                            }
-                                            refreshPlayingState()
-                                            return@launch
-                                        }
-
-                                        // New podcast selected -> parse RSS -> play latest audio
-                                        loading = true
-                                        val audioUrl = vm.getLatestEpisodeAudioUrl(item.feedUrl)
-
-                                        if (audioUrl.isNullOrBlank()) {
-                                            error = "No playable audio found for this podcast"
-                                        } else {
-                                            nowFeedUrl = item.feedUrl
-                                            nowTitle = item.title
-                                            nowAuthor = item.author
-
-                                            player.play(audioUrl)
-                                            refreshPlayingState()
-                                        }
-                                    } catch (e: Exception) {
-                                        error = e.message ?: "Failed to play"
-                                    } finally {
-                                        loading = false
-                                    }
-                                }
-                            }
+                            .clickable { onOpenDetails(item) } // ✅ tap -> details
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Text(
@@ -261,16 +206,19 @@ fun SearchScreen(
                                 overflow = TextOverflow.Ellipsis,
                                 color = TextSecondary
                             )
+
                             Text(
-                                text = subtitle,
+                                text = "Tap to open details",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (isThisSelected && player.isPlaying()) MaterialTheme.colorScheme.primary else TextSecondary
+                                color = TextSecondary
                             )
+
+                            // ✅ quick play hint (optional): play by long press later if you want
                         }
                     }
                 }
 
-                item { Spacer(Modifier.height(64.dp)) } // space above bottom bar
+                item { Spacer(Modifier.height(64.dp)) }
             }
         }
     }
@@ -284,10 +232,7 @@ private fun MiniPlayerBar(
     onPlayPause: () -> Unit,
     onStop: () -> Unit
 ) {
-    Surface(
-        color = Cocoa,
-        tonalElevation = 6.dp
-    ) {
+    Surface(color = Cocoa, tonalElevation = 6.dp) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
