@@ -20,15 +20,20 @@ import java.util.TimeZone
 @Composable
 fun PodcastDetailsScreen(
     vm: SearchViewModel,
-    player: PlayerManager,                 // ✅ shared player
+    player: PlayerManager,
     podcast: PodcastSummaryViewData,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenEpisodes: (PodcastSummaryViewData) -> Unit
 ) {
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var playing by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
+
+    fun refresh() {
+        playing = player.isPlaying()
+    }
 
     fun formatReleaseDate(iso: String?): String {
         if (iso.isNullOrBlank()) return "—"
@@ -39,10 +44,6 @@ fun PodcastDetailsScreen(
             val out = SimpleDateFormat("MMM d, yyyy", Locale.US)
             out.format(date!!)
         }.getOrElse { iso }
-    }
-
-    fun refresh() {
-        playing = player.isPlaying()
     }
 
     Scaffold(
@@ -69,6 +70,7 @@ fun PodcastDetailsScreen(
 
             Spacer(Modifier.height(6.dp))
 
+            // эти поля показываем если они есть в твоей модели
             InfoRow("Release date", formatReleaseDate(podcast.releaseDate))
             InfoRow("Genre", podcast.genre ?: "—")
             InfoRow("Country", podcast.country ?: "—")
@@ -81,7 +83,6 @@ fun PodcastDetailsScreen(
                 Text("Error: $error", color = MaterialTheme.colorScheme.error)
             }
 
-            // ✅ Real PLAY button
             Button(
                 onClick = {
                     scope.launch {
@@ -93,7 +94,7 @@ fun PodcastDetailsScreen(
                             if (audioUrl.isNullOrBlank()) {
                                 error = "No playable audio found"
                             } else {
-                                player.play(audioUrl)     // ✅ plays!
+                                player.play(audioUrl)
                                 refresh()
                             }
                         } catch (e: Exception) {
@@ -111,24 +112,27 @@ fun PodcastDetailsScreen(
             }
 
             OutlinedButton(
-                onClick = {
-                    player.pause()
-                    refresh()
-                },
+                onClick = { onOpenEpisodes(podcast) },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Pause")
+                Text("Open episodes list")
             }
 
             OutlinedButton(
-                onClick = {
-                    player.stop()
-                    refresh()
-                },
+                onClick = { player.pause(); refresh() },
                 modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Stop")
-            }
+            ) { Text("Pause") }
+
+            OutlinedButton(
+                onClick = { player.stop(); refresh() },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Stop") }
+
+            PlayerWaveformBar(
+                player = player,
+                modifier = Modifier.fillMaxWidth()
+            )
+
         }
     }
 }
