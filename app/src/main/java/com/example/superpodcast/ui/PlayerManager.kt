@@ -9,28 +9,33 @@ class PlayerManager(context: Context) {
     var currentUrl: String? = null
         private set
 
+    // ✅ добавь это
+    var currentKey: String? = null
+        private set
+
     private var prepared = false
 
-    fun play(url: String) {
+    // ✅ добавили key
+    fun play(url: String, key: String? = null) {
         if (url.isBlank()) return
 
         // если тот же url — просто start
         if (currentUrl == url && prepared) {
+            currentKey = key ?: currentKey
             mp?.start()
             return
         }
 
-        stop() // освободить предыдущий
+        stop()
 
         currentUrl = url
+        currentKey = key
+
         mp = MediaPlayer().apply {
             setDataSource(url)
             setOnPreparedListener {
                 prepared = true
                 start()
-            }
-            setOnCompletionListener {
-                // можно оставить prepared=true, но isPlaying станет false
             }
             setOnErrorListener { _, _, _ ->
                 prepared = false
@@ -40,41 +45,24 @@ class PlayerManager(context: Context) {
         }
     }
 
-    fun pause() {
-        mp?.let {
-            if (it.isPlaying) it.pause()
-        }
-    }
+    fun pause() { mp?.let { if (it.isPlaying) it.pause() } }
 
     fun stop() {
         mp?.let {
-            try {
-                it.stop()
-            } catch (_: Exception) { }
+            try { it.stop() } catch (_: Exception) {}
             it.reset()
             it.release()
         }
         mp = null
         prepared = false
         currentUrl = null
+        currentKey = null // ✅
     }
 
     fun release() = stop()
-
     fun isPlaying(): Boolean = mp?.isPlaying == true
-
-    fun durationMs(): Long {
-        val d = runCatching { mp?.duration ?: 0 }.getOrDefault(0)
-        return d.toLong().coerceAtLeast(0)
-    }
-
-    fun positionMs(): Long {
-        val p = runCatching { mp?.currentPosition ?: 0 }.getOrDefault(0)
-        return p.toLong().coerceAtLeast(0)
-    }
-
-    fun seekTo(ms: Long) {
-        val safe = ms.coerceAtLeast(0).toInt()
-        runCatching { mp?.seekTo(safe) }
-    }
+    fun durationMs(): Long = runCatching { mp?.duration ?: 0 }.getOrDefault(0).toLong().coerceAtLeast(0)
+    fun positionMs(): Long = runCatching { mp?.currentPosition ?: 0 }.getOrDefault(0).toLong().coerceAtLeast(0)
+    fun seekTo(ms: Long) { runCatching { mp?.seekTo(ms.coerceAtLeast(0).toInt()) } }
 }
+

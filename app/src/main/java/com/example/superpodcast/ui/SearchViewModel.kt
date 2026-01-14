@@ -25,15 +25,12 @@ class SearchViewModel : ViewModel() {
             response.results
                 .mapNotNull { dto ->
                     val title = dto.collectionName ?: return@mapNotNull null
-
                     PodcastSummaryViewData(
                         id = dto.collectionId,
                         title = title,
                         author = dto.artistName ?: "",
                         imageUrl = dto.artworkUrl100 ?: "",
                         feedUrl = dto.feedUrl ?: "",
-
-                        // ✅ Details fields
                         releaseDate = dto.releaseDate,
                         genre = dto.primaryGenreName,
                         country = dto.country,
@@ -41,11 +38,12 @@ class SearchViewModel : ViewModel() {
                         collectionUrl = dto.collectionViewUrl
                     )
                 }
+                .filter { it.feedUrl.isNotBlank() } // ✅ ВАЖНО
                 .filter { item ->
-                    val words = item.title.trim().split("\\s+".toRegex()).size
-                    val matches = safeRegex.containsMatchIn(item.title) || safeRegex.containsMatchIn(item.author)
-                    matches && words >= minWords
+                    (safeRegex.containsMatchIn(item.title) || safeRegex.containsMatchIn(item.author)) &&
+                            item.title.trim().split("\\s+".toRegex()).size >= minWords
                 }
+
         }
     }
 

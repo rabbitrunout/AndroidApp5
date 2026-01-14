@@ -40,6 +40,7 @@ fun EpisodesScreen(
 
     LaunchedEffect(podcast.feedUrl) {
         loading = true
+        error = null
         try {
             episodes = vm.getEpisodes(podcast.feedUrl)
             if (episodes.isEmpty()) error = "No episodes found"
@@ -78,8 +79,13 @@ fun EpisodesScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            if (loading) LinearProgressIndicator()
-            if (error != null) Text("Error: $error", color = MaterialTheme.colorScheme.error)
+            if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            if (error != null) {
+                Spacer(Modifier.height(6.dp))
+                Text("Error: $error", color = MaterialTheme.colorScheme.error)
+            }
+
+            Spacer(Modifier.height(8.dp))
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(episodes) { ep ->
@@ -88,6 +94,7 @@ fun EpisodesScreen(
 
                     EpisodeCard(
                         episode = ep,
+                        player = player,          // ✅ важно
                         playing = playingNow,
                         onPlayPause = {
                             scope.launch {
@@ -96,7 +103,7 @@ fun EpisodesScreen(
                                     else player.play(player.currentUrl ?: ep.audioUrl)
                                 } else {
                                     selectedEpisodeId = ep.id
-                                    player.play(ep.audioUrl)
+                                    player.play(ep.audioUrl, key = ep.id)
                                 }
                                 refresh()
                             }
@@ -108,6 +115,8 @@ fun EpisodesScreen(
                         }
                     )
                 }
+
+                item { Spacer(Modifier.height(8.dp)) }
             }
         }
     }
@@ -116,6 +125,7 @@ fun EpisodesScreen(
 @Composable
 private fun EpisodeCard(
     episode: EpisodeUi,
+    player: PlayerManager,            // ✅ добавили
     playing: Boolean,
     onPlayPause: () -> Unit,
     onStop: () -> Unit
@@ -124,21 +134,21 @@ private fun EpisodeCard(
         Column(Modifier.padding(12.dp)) {
 
             Text(
-                episode.title,
+                text = episode.title,
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
 
             Text(
-                episode.pubDateText,
+                text = episode.pubDateText,
                 style = MaterialTheme.typography.bodySmall
             )
 
             Spacer(Modifier.height(6.dp))
 
             Text(
-                episode.description,
+                text = episode.description,
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis
@@ -149,8 +159,8 @@ private fun EpisodeCard(
             Row {
                 FilledTonalButton(onClick = onPlayPause) {
                     Icon(
-                        if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        null
+                        imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = null
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(if (playing) "Pause" else "Play")
@@ -159,11 +169,20 @@ private fun EpisodeCard(
                 Spacer(Modifier.width(10.dp))
 
                 OutlinedButton(onClick = onStop) {
-                    Icon(Icons.Filled.Stop, null)
+                    Icon(Icons.Filled.Stop, contentDescription = null)
                     Spacer(Modifier.width(4.dp))
                     Text("Stop")
                 }
             }
+
+            // ✅ Прогресс бар внутри карточки
+            EpisodeProgressBar(
+                player = player,
+                episodeId = episode.id,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+            )
         }
     }
 }

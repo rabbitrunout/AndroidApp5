@@ -9,6 +9,7 @@ interface ItunesService {
     suspend fun searchPodcasts(
         @Query("term") term: String,
         @Query("media") media: String = "podcast",
+        @Query("entity") entity: String = "podcast",   // ✅ ВАЖНО
         @Query("limit") limit: Int = 50,
         @Query("country") country: String = "CA"
     ): PodcastResponse
