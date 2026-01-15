@@ -1,5 +1,6 @@
 package com.example.superpodcast.ui
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import com.example.superpodcast.model.EpisodeUi
 import com.example.superpodcast.model.PodcastSummaryViewData
@@ -9,173 +10,275 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserFactory
+import java.io.InputStream
+import java.util.concurrent.TimeUnit
 
 class SearchViewModel : ViewModel() {
 
+    companion object {
+        private const val TAG = "SearchVM"
+    }
+
     private val repo = ItunesRepo(RetrofitProvider.itunes)
-    private val http = OkHttpClient()
 
-    suspend fun search(term: String, regex: String, minWords: Int): List<PodcastSummaryViewData> {
+    // ✅ чуть более "живучий" клиент: таймауты + редиректы
+    private val http = OkHttpClient.Builder()
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * @param onlyPlayable если true — оставляем только с feedUrl (как у тебя было),
+     *                    если false — возвращаем всё (рекомендую для UI).
+     */
+    suspend fun search(
+        term: String,
+        regex: String,
+        minWords: Int,
+        onlyPlayable: Boolean = false
+    ): List<PodcastSummaryViewData> {
         return withContext(Dispatchers.IO) {
-            val response = repo.searchByTerm(term)
+            val q = term.trim().ifEmpty { "podcast" } // ✅ чтобы поиск работал даже пустым
 
-            val safeRegex = runCatching { Regex(regex, RegexOption.IGNORE_CASE) }
+            val response = repo.searchByTerm(q)
+
+            val safeRegex = runCatching { Regex(regex.trim().ifEmpty { ".*" }, RegexOption.IGNORE_CASE) }
                 .getOrElse { Regex(".*") }
 
-            response.results
-                .mapNotNull { dto ->
-                    val title = dto.collectionName ?: return@mapNotNull null
-                    PodcastSummaryViewData(
-                        id = dto.collectionId,
-                        title = title,
-                        author = dto.artistName ?: "",
-                        imageUrl = dto.artworkUrl100 ?: "",
-                        feedUrl = dto.feedUrl ?: "",
-                        releaseDate = dto.releaseDate,
-                        genre = dto.primaryGenreName,
-                        country = dto.country,
-                        trackCount = dto.trackCount,
-                        collectionUrl = dto.collectionViewUrl
-                    )
-                }
-                .filter { it.feedUrl.isNotBlank() } // ✅ ВАЖНО
-                .filter { item ->
-                    (safeRegex.containsMatchIn(item.title) || safeRegex.containsMatchIn(item.author)) &&
-                            item.title.trim().split("\\s+".toRegex()).size >= minWords
-                }
+            val raw = response.results.mapNotNull { dto ->
+                val title = dto.collectionName ?: return@mapNotNull null
+                val feed = dto.feedUrl?.trim()
 
+                PodcastSummaryViewData(
+                    id = dto.collectionId,
+                    title = title,
+                    author = dto.artistName ?: "",
+                    imageUrl = dto.artworkUrl100 ?: "",
+                    feedUrl = feed,
+                    releaseDate = dto.releaseDate,
+                    genre = dto.primaryGenreName,
+                    country = dto.country,
+                    trackCount = dto.trackCount,
+                    collectionUrl = dto.collectionViewUrl
+                )
+            }
+
+            val filtered = raw.filter { item ->
+                val wordsOk = item.title.trim()
+                    .split("\\s+".toRegex())
+                    .filter { it.isNotBlank() }
+                    .size >= (minWords.coerceAtLeast(1))
+
+                val textOk = safeRegex.containsMatchIn(item.title) || safeRegex.containsMatchIn(item.author)
+
+                wordsOk && textOk
+            }
+
+            val playableCount = filtered.count { !it.feedUrl.isNullOrBlank() }
+            Log.d(TAG, "search q='$q' raw=${raw.size} afterFilter=${filtered.size} playable=$playableCount onlyPlayable=$onlyPlayable")
+
+            if (onlyPlayable) filtered.filter { !it.feedUrl.isNullOrBlank() } else filtered
         }
     }
 
     /**
-     * ✅ Get latest episode audio URL from RSS/Atom
+     * Берём первый playable audio url из RSS.
      */
     suspend fun getLatestEpisodeAudioUrl(feedUrl: String): String? {
         return withContext(Dispatchers.IO) {
-            if (feedUrl.isBlank()) return@withContext null
-            val xml = fetch(feedUrl) ?: return@withContext null
+            val url = feedUrl.trim()
+            if (url.isBlank()) return@withContext null
 
-            // Search in whole document (usually first item has enclosure)
-            firstAudioUrlFromXml(xml)
-        }
-    }
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", "SuperPodcast/1.0")
+                .build()
 
-    /**
-     * ✅ Episodes list
-     */
-    suspend fun getEpisodes(feedUrl: String): List<EpisodeUi> {
-        return withContext(Dispatchers.IO) {
-            if (feedUrl.isBlank()) return@withContext emptyList()
-            val xml = fetch(feedUrl) ?: return@withContext emptyList()
-
-            // <item> ... </item>
-            val items = Regex("""<item\b.*?</item>""",
-                setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-            )
-                .findAll(xml)
-                .map { it.value }
-                .toList()
-
-            items.mapIndexedNotNull { index, itemXml ->
-                val titleRaw = findTagText(itemXml, "title")
-                val title = decodeEntities(titleRaw).trim()
-                if (title.isBlank()) return@mapIndexedNotNull null
-
-                val pubDate = decodeEntities(findTagText(itemXml, "pubDate")).trim()
-
-                // Prefer <content:encoded> if exists, else <description>
-                val contentEncoded = findTagText(itemXml, "content:encoded")
-                val descriptionRaw = if (contentEncoded.isNotBlank()) contentEncoded else findTagText(itemXml, "description")
-                val description = decodeEntities(cleanHtml(descriptionRaw)).trim()
-
-                val duration = decodeEntities(findTagText(itemXml, "itunes:duration")).trim()
-
-                val audioUrl = firstAudioUrlFromXml(itemXml).orEmpty().trim()
-
-                EpisodeUi(
-                    id = "${title.hashCode()}_$index",
-                    title = title,
-                    pubDateText = pubDate,
-                    audioUrl = audioUrl,
-                    description = if (duration.isNotBlank())
-                        "Duration: $duration\n$description".trim()
-                    else description
-                )
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "RSS request failed code=${resp.code} url=$url")
+                    return@withContext null
+                }
+                val body = resp.body ?: return@withContext null
+                body.byteStream().use { stream ->
+                    parseFirstEpisodeAudioUrl(stream)
+                }
             }
         }
     }
 
-    // -------------------- helpers --------------------
+    suspend fun getEpisodes(feedUrl: String): List<EpisodeUi> {
+        return withContext(Dispatchers.IO) {
+            val url = feedUrl.trim()
+            if (url.isBlank()) return@withContext emptyList()
 
-    private fun fetch(url: String): String? {
-        val req = Request.Builder()
-            .url(url)
-            .header("User-Agent", "SuperPodcast/1.0")
-            .build()
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", "SuperPodcast/1.0")
+                .build()
 
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return null
-            return resp.body?.string()
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "RSS episodes failed code=${resp.code} url=$url")
+                    return@withContext emptyList()
+                }
+                val body = resp.body ?: return@withContext emptyList()
+
+                body.byteStream().use { stream ->
+                    parseEpisodes(stream)
+                }
+            }
         }
     }
 
-    /**
-     * Finds FIRST audio url in given xml block:
-     * - <enclosure url="...">
-     * - <media:content url="...">
-     * - <media:enclosure url="...">
-     * - <link rel="enclosure" href="..."> (Atom)
-     */
-    private fun firstAudioUrlFromXml(xml: String): String? {
-        // 1) enclosure
-        findFirstUrl(xml, Regex("""<enclosure[^>]*url="([^"]+)"""", RegexOption.IGNORE_CASE))?.let { return it }
+    // ---------------------------
+    // XML parsing helpers
+    // ---------------------------
 
-        // 2) media:content
-        findFirstUrl(xml, Regex("""<media:content[^>]*url="([^"]+)"""", RegexOption.IGNORE_CASE))?.let { return it }
-
-        // 3) media:enclosure (some feeds)
-        findFirstUrl(xml, Regex("""<media:enclosure[^>]*url="([^"]+)"""", RegexOption.IGNORE_CASE))?.let { return it }
-
-        // 4) atom link rel=enclosure
-        findFirstUrl(xml, Regex("""<link[^>]*rel="enclosure"[^>]*href="([^"]+)"""", RegexOption.IGNORE_CASE))?.let { return it }
-
-        return null
+    private fun newParser(input: InputStream): XmlPullParser {
+        val factory = XmlPullParserFactory.newInstance()
+        factory.isNamespaceAware = true
+        return factory.newPullParser().apply { setInput(input, null) }
     }
 
-    private fun findFirstUrl(xml: String, pattern: Regex): String? {
-        val m = pattern.find(xml) ?: return null
-        val url = m.groupValues.getOrNull(1)?.trim().orEmpty()
-        if (url.isBlank()) return null
+    private fun parseFirstEpisodeAudioUrl(input: InputStream): String? {
+        val parser = newParser(input)
+        var inItem = false
 
-        // Keep even if no extension (some are redirects)
-        val lower = url.lowercase()
-        val looksAudio = lower.contains(".mp3") || lower.contains(".m4a") || lower.contains("audio") || lower.contains("redirect")
-        return if (looksAudio) url else url
+        while (true) {
+            when (parser.eventType) {
+                XmlPullParser.START_TAG -> {
+                    val name = parser.name?.lowercase().orEmpty()
+
+                    if (name == "item") inItem = true
+
+                    if (inItem) {
+                        if (name == "enclosure") {
+                            val url = parser.getAttributeValue(null, "url")?.trim().orEmpty()
+                            if (url.isNotBlank()) return url
+                        }
+                        if (name.endsWith("content")) {
+                            val url = parser.getAttributeValue(null, "url")?.trim().orEmpty()
+                            if (url.isNotBlank()) return url
+                        }
+                        if (name == "link") {
+                            val rel = parser.getAttributeValue(null, "rel")?.lowercase().orEmpty()
+                            if (rel == "enclosure") {
+                                val href = parser.getAttributeValue(null, "href")?.trim().orEmpty()
+                                if (href.isNotBlank()) return href
+                            }
+                        }
+                    }
+                }
+
+                XmlPullParser.END_DOCUMENT -> return null
+            }
+            parser.next()
+        }
     }
 
-    private fun findTagText(xml: String, tag: String): String {
-        // CDATA first
-        val cdata = Regex(
-            """<${Regex.escape(tag)}[^>]*>\s*<!\[CDATA\[(.*?)]]>\s*</${Regex.escape(tag)}>""",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        ).find(xml)?.groupValues?.getOrNull(1)
+    private fun parseEpisodes(input: InputStream): List<EpisodeUi> {
+        val parser = newParser(input)
+        val out = ArrayList<EpisodeUi>(64)
 
-        if (!cdata.isNullOrBlank()) return cdata
+        var inItem = false
+        var currentTitle = ""
+        var currentPubDate = ""
+        var currentDesc = ""
+        var currentAudioUrl = ""
 
-        // normal tag
-        val normal = Regex(
-            """<${Regex.escape(tag)}[^>]*>(.*?)</${Regex.escape(tag)}>""",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        ).find(xml)?.groupValues?.getOrNull(1)
+        fun flushEpisode() {
+            if (currentTitle.isBlank()) return
 
-        return normal?.trim().orEmpty()
+            val cleanedDesc = decodeEntities(cleanHtml(currentDesc)).trim()
+            val title = decodeEntities(currentTitle).trim()
+            val pub = decodeEntities(currentPubDate).trim()
+
+            val id = "${title.hashCode()}_${pub.hashCode()}_${out.size}"
+
+            out.add(
+                EpisodeUi(
+                    id = id,
+                    title = title,
+                    pubDateText = pub,
+                    audioUrl = currentAudioUrl.trim(),
+                    description = cleanedDesc
+                )
+            )
+        }
+
+        while (true) {
+            when (parser.eventType) {
+                XmlPullParser.START_TAG -> {
+                    val name = parser.name?.lowercase().orEmpty()
+
+                    if (name == "item") {
+                        inItem = true
+                        currentTitle = ""
+                        currentPubDate = ""
+                        currentDesc = ""
+                        currentAudioUrl = ""
+                    }
+
+                    if (inItem) {
+                        when (name) {
+                            "title" -> currentTitle = readText(parser)
+                            "pubdate" -> currentPubDate = readText(parser)
+                            "description" -> currentDesc = readText(parser)
+
+                            "enclosure" -> {
+                                val url = parser.getAttributeValue(null, "url")?.trim().orEmpty()
+                                if (url.isNotBlank()) currentAudioUrl = url
+                            }
+
+                            else -> {
+                                if (name.endsWith("content")) {
+                                    val url = parser.getAttributeValue(null, "url")?.trim().orEmpty()
+                                    if (currentAudioUrl.isBlank() && url.isNotBlank()) currentAudioUrl = url
+                                }
+                                if (name == "link") {
+                                    val rel = parser.getAttributeValue(null, "rel")?.lowercase().orEmpty()
+                                    if (rel == "enclosure") {
+                                        val href = parser.getAttributeValue(null, "href")?.trim().orEmpty()
+                                        if (currentAudioUrl.isBlank() && href.isNotBlank()) currentAudioUrl = href
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                XmlPullParser.END_TAG -> {
+                    val name = parser.name?.lowercase().orEmpty()
+                    if (name == "item") {
+                        flushEpisode()
+                        inItem = false
+                    }
+                }
+
+                XmlPullParser.END_DOCUMENT -> return out
+            }
+            parser.next()
+        }
+    }
+
+    private fun readText(parser: XmlPullParser): String {
+        var result = ""
+        if (parser.next() == XmlPullParser.TEXT) {
+            result = parser.text ?: ""
+            parser.nextTag()
+        }
+        return result
     }
 
     private fun cleanHtml(text: String): String {
         return text
             .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
-            .replace(Regex("<p[^>]*>", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("</p>", RegexOption.IGNORE_CASE), "\n")
             .replace(Regex("<.*?>", RegexOption.DOT_MATCHES_ALL), "")
             .trim()
     }
@@ -187,6 +290,5 @@ class SearchViewModel : ViewModel() {
             .replace("&gt;", ">")
             .replace("&quot;", "\"")
             .replace("&#39;", "'")
-            .replace("&nbsp;", " ")
     }
 }

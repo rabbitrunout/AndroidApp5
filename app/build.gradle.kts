@@ -77,12 +77,18 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     // Media3 (ExoPlayer)
-    implementation("androidx.media3:media3-exoplayer:1.4.1")
-    implementation("androidx.media3:media3-ui:1.4.1")
+        implementation ("androidx.media3:media3-exoplayer:1.2.1")
+        implementation ("androidx.media3:media3-common:1.2.1")
+
+
 
 // RSS parser (простая библиотека)
     implementation("com.prof18.rssparser:rssparser:6.0.8")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    implementation("androidx.navigation:navigation-compose:2.7.7")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+
 
     // Tests
     testImplementation(libs.junit)

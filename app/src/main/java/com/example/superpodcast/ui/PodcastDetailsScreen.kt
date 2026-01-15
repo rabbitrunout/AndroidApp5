@@ -5,7 +5,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -24,16 +23,14 @@ import java.util.TimeZone
 fun PodcastDetailsScreen(
     vm: SearchViewModel,
     player: PlayerManager,
+    holder: PlayerHolderViewModel,
     podcast: PodcastSummaryViewData,
     onBack: () -> Unit,
     onOpenEpisodes: (PodcastSummaryViewData) -> Unit
 ) {
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-
-    // локальное состояние UI (обновляем таймером)
     var isPlaying by remember { mutableStateOf(false) }
-    var hasTrack by remember { mutableStateOf(false) } // есть ли текущий url у плеера
 
     val scope = rememberCoroutineScope()
 
@@ -48,38 +45,49 @@ fun PodcastDetailsScreen(
         }.getOrElse { iso }
     }
 
-    // ✅ авто-обновление состояния плеера (чтобы кнопки менялись сразу)
-    LaunchedEffect(Unit) {
+    LaunchedEffect(player) {
         while (true) {
             isPlaying = player.isPlaying()
-            hasTrack = !player.currentUrl.isNullOrBlank()
             delay(250)
         }
     }
 
-    // ✅ SMART play/pause:
-    // 1) если уже есть currentUrl -> toggle play/pause
-    // 2) если нет -> загрузи latest episode и play
     fun smartPlayPause() {
         scope.launch {
             try {
                 error = null
 
-                // если уже есть трек, просто toggle
-                if (!player.currentUrl.isNullOrBlank()) {
+                // toggle если уже есть трек
+                val currentUrl = player.currentUrl
+                if (!currentUrl.isNullOrBlank()) {
                     if (player.isPlaying()) player.pause()
-                    else player.play(player.currentUrl!!)
+                    else player.play(currentUrl)
                     return@launch
                 }
 
-                // иначе получаем latest audio и play
+                // иначе грузим latest из RSS
+                val feed = podcast.feedUrl?.trim().orEmpty()
+                if (feed.isBlank()) {
+                    error = "This podcast has no RSS feedUrl"
+                    return@launch
+                }
+
                 loading = true
-                val audioUrl = vm.getLatestEpisodeAudioUrl(podcast.feedUrl)
+                val audioUrl = vm.getLatestEpisodeAudioUrl(feed)
+
                 if (audioUrl.isNullOrBlank()) {
                     error = "No playable audio found"
-                } else {
-                    player.play(audioUrl)
+                    return@launch
                 }
+
+                holder.setNowPlaying(
+                    title = podcast.title,
+                    author = podcast.author,
+                    url = audioUrl,
+                    key = feed
+                )
+                player.play(audioUrl)
+
             } catch (e: Exception) {
                 error = e.message ?: "Failed to play"
             } finally {
@@ -98,7 +106,8 @@ fun PodcastDetailsScreen(
                     }
                 }
             )
-        }
+        },
+        bottomBar = { GlobalMiniPlayerBar(player = player, holder = holder) }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -116,23 +125,17 @@ fun PodcastDetailsScreen(
             InfoRow("Genre", podcast.genre ?: "—")
             InfoRow("Country", podcast.country ?: "—")
             InfoRow("Episodes", podcast.trackCount?.toString() ?: "—")
-            InfoRow("Feed URL", if (podcast.feedUrl.isNotBlank()) "Available" else "—")
+            InfoRow("Feed URL", if (!podcast.feedUrl.isNullOrBlank()) "Available" else "—")
 
-            if (error != null) {
-                Text("Error: $error", color = MaterialTheme.colorScheme.error)
-            }
+            if (error != null) Text("Error: $error", color = MaterialTheme.colorScheme.error)
 
-            // ✅ вместо LinearProgressIndicator — показываем состояние прямо на кнопке
             Button(
                 onClick = { smartPlayPause() },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !loading
             ) {
                 if (loading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp
-                    )
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(10.dp))
                     Text("Loading audio…")
                 } else {
@@ -145,32 +148,12 @@ fun PodcastDetailsScreen(
                 }
             }
 
-            // ✅ episodes list
             OutlinedButton(
                 onClick = { onOpenEpisodes(podcast) },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !podcast.feedUrl.isNullOrBlank()
             ) {
                 Text("Open episodes list")
-            }
-
-            // ✅ Stop — отдельной маленькой кнопкой (и только если что-то уже загружено)
-            if (hasTrack) {
-                OutlinedButton(
-                    onClick = { player.stop() },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Filled.Stop, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Stop")
-                }
-            }
-
-            // ✅ Waveform/Seek показываем только когда есть трек (иначе будет 0:00 и пусто)
-            if (hasTrack) {
-                PlayerWaveformBar(
-                    player = player,
-                    modifier = Modifier.fillMaxWidth()
-                )
             }
         }
     }

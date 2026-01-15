@@ -5,10 +5,12 @@ data class PodcastSummaryViewData(
     val title: String,
     val author: String,
     val imageUrl: String,
-    val feedUrl: String,
 
-    // ✅ Доп. инфо для Details
-    val releaseDate: String? = null,        // ISO строка от iTunes
+    // ✅ важно: может быть null / пустой / не RSS
+    val feedUrl: String?,
+
+    // Details
+    val releaseDate: String? = null,
     val genre: String? = null,
     val country: String? = null,
     val trackCount: Int? = null,

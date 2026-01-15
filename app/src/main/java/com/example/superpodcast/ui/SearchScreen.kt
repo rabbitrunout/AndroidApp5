@@ -1,17 +1,14 @@
 package com.example.superpodcast.ui
 
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,10 +16,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.superpodcast.model.PodcastSummaryViewData
-import com.example.superpodcast.ui.theme.Cocoa
 import com.example.superpodcast.ui.theme.TextPrimary
 import com.example.superpodcast.ui.theme.TextSecondary
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -30,6 +25,7 @@ import kotlinx.coroutines.launch
 fun SearchScreen(
     vm: SearchViewModel,
     player: PlayerManager,
+    holder: PlayerHolderViewModel,
     initialTerm: String = "",
     onBack: () -> Unit = {},
     onOpenDetails: (PodcastSummaryViewData) -> Unit
@@ -42,21 +38,10 @@ fun SearchScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var results by remember { mutableStateOf<List<PodcastSummaryViewData>>(emptyList()) }
 
-    // ✅ state that связывает плеер и список
-    var nowTitle by remember { mutableStateOf<String?>(null) }
-    var nowAuthor by remember { mutableStateOf<String?>(null) }
-    var nowFeedUrl by remember { mutableStateOf<String?>(null) }
-
-    var isPlaying by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    // ✅ автоподдержка isPlaying (чтобы список обновлялся сам)
-    LaunchedEffect(nowFeedUrl) {
-        while (true) {
-            isPlaying = player.isPlaying()
-            delay(350)
-        }
-    }
+    // ✅ глобальное состояние "что сейчас играет"
+    val nowPlaying by holder.nowPlaying.collectAsState()
 
     fun runSearch() {
         val q = term.trim()
@@ -73,7 +58,9 @@ fun SearchScreen(
 
         scope.launch {
             try {
-                results = vm.search(q, safeRegex, minWords)
+                results = vm.search(q, safeRegex, minWords, onlyPlayable = false)
+                if (results.isEmpty()) error = "No results found."
+
             } catch (e: Exception) {
                 error = e.message ?: "Unknown error"
             } finally {
@@ -82,22 +69,55 @@ fun SearchScreen(
         }
     }
 
-    fun playLatest(feedUrl: String, title: String, author: String) {
+    suspend fun playLatest(item: PodcastSummaryViewData, itemKey: String, feed: String) {
+        val audioUrl = vm.getLatestEpisodeAudioUrl(feed)
+        if (audioUrl.isNullOrBlank()) {
+            error = "No playable audio found"
+            return
+        }
+
+        // ✅ сохраняем current key + playing state
+        holder.setNowPlaying(
+            title = item.title,
+            author = item.author,
+            url = audioUrl,
+            key = itemKey,
+            isPlaying = true
+        )
+        player.play(audioUrl)
+    }
+
+    fun quickPlayOrToggle(item: PodcastSummaryViewData) {
         scope.launch {
             try {
                 error = null
                 loading = true
 
-                val audioUrl = vm.getLatestEpisodeAudioUrl(feedUrl)
-                if (audioUrl.isNullOrBlank()) {
-                    error = "No playable audio found for this podcast"
-                } else {
-                    // ✅ важно: обновляем nowFeedUrl (это и есть “какой подкаст играет”)
-                    nowFeedUrl = feedUrl
-                    nowTitle = title
-                    nowAuthor = author
+                val feed = item.feedUrl?.trim().orEmpty()
+                if (feed.isBlank()) {
+                    error = "No RSS for this podcast"
+                    return@launch
+                }
 
-                    player.play(audioUrl)
+                // ✅ стабильный ключ: feedUrl, иначе id (на случай странных данных)
+                val itemKey = feed.ifBlank { "id:${item.id}" }
+
+                val isThisItemPlaying = nowPlaying.isPlaying && nowPlaying.key == itemKey
+
+                if (isThisItemPlaying && player.isPlaying()) {
+                    // ✅ пауза только для текущего
+                    player.pause()
+                    holder.setPlaying(false)
+                } else {
+                    // ✅ запускаем именно этот подкаст
+                    // если уже есть url — можно продолжить, иначе берем последний эпизод
+                    val currentUrl = nowPlaying.url
+                    if (!currentUrl.isNullOrBlank() && nowPlaying.key == itemKey) {
+                        player.play(currentUrl)
+                        holder.setPlaying(true)
+                    } else {
+                        playLatest(item, itemKey, feed)
+                    }
                 }
             } catch (e: Exception) {
                 error = e.message ?: "Failed to play"
@@ -127,29 +147,7 @@ fun SearchScreen(
                 }
             )
         },
-        bottomBar = {
-            if (nowFeedUrl != null && nowTitle != null) {
-                MiniPlayerBar(
-                    title = nowTitle ?: "",
-                    author = nowAuthor ?: "",
-                    playing = isPlaying,
-                    onPlayPause = {
-                        if (player.isPlaying()) player.pause()
-                        else {
-                            val url = player.currentUrl
-                            if (!url.isNullOrBlank()) player.play(url)
-                            else playLatest(nowFeedUrl!!, nowTitle ?: "", nowAuthor ?: "")
-                        }
-                    },
-                    onStop = {
-                        player.stop()
-                        nowFeedUrl = null
-                        nowTitle = null
-                        nowAuthor = null
-                    }
-                )
-            }
-        }
+        bottomBar = { GlobalMiniPlayerBar(player = player, holder = holder) }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -183,31 +181,30 @@ fun SearchScreen(
             )
 
             if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-
-            if (error != null) {
-                Text("Error: $error", color = MaterialTheme.colorScheme.error)
-            }
+            if (error != null) Text("Error: $error", color = MaterialTheme.colorScheme.error)
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(results) { item ->
-                    val canPlay = item.feedUrl.isNotBlank()
-                    val isThisPlaying = (nowFeedUrl == item.feedUrl && isPlaying)
+                items(results, key = { it.id }) { item ->
+                    val feed = item.feedUrl?.trim().orEmpty()
+                    val playable = feed.isNotBlank()
+
+                    // ✅ ключ элемента + "играет ли именно он"
+                    val itemKey = if (feed.isNotBlank()) feed else "id:${item.id}"
+                    val isThisItemPlaying = nowPlaying.isPlaying && nowPlaying.key == itemKey
 
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
                             .combinedClickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
                                 onClick = { onOpenDetails(item) },
-                                onLongClick = {
-                                    if (canPlay) playLatest(item.feedUrl, item.title, item.author)
-                                    else error = "This item has no feedUrl (can't play)"
-                                }
-                            )
+                                onLongClick = { if (playable) quickPlayOrToggle(item) }
+                            ),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                     ) {
                         Row(
-                            modifier = Modifier.padding(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
@@ -225,95 +222,25 @@ fun SearchScreen(
                                     overflow = TextOverflow.Ellipsis,
                                     color = TextSecondary
                                 )
-
-                                if (isThisPlaying) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Equalizer,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Spacer(Modifier.width(6.dp))
-                                        Text(
-                                            text = "Playing",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                } else {
-                                    Text(
-                                        text = "Tap = details • Long press = play",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = TextSecondary
-                                    )
-                                }
+                                Text(
+                                    text = if (playable) "Tap = details • Long press = play" else "Not playable (no RSS)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
                             }
 
-                            IconButton(
-                                enabled = canPlay,
-                                onClick = { playLatest(item.feedUrl, item.title, item.author) }
-                            ) {
-                                Icon(Icons.Filled.PlayArrow, contentDescription = "Play")
+                            if (playable) {
+                                Icon(
+                                    imageVector = if (isThisItemPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
                             }
                         }
                     }
                 }
 
-                item { Spacer(Modifier.height(64.dp)) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MiniPlayerBar(
-    title: String,
-    author: String,
-    playing: Boolean,
-    onPlayPause: () -> Unit,
-    onStop: () -> Unit
-) {
-    Surface(color = Cocoa, tonalElevation = 6.dp) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    color = TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Text(
-                    text = author,
-                    color = TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            Spacer(Modifier.width(8.dp))
-
-            IconButton(onClick = onPlayPause) {
-                Icon(
-                    imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = "Play/Pause",
-                    tint = TextPrimary
-                )
-            }
-
-            IconButton(onClick = onStop) {
-                Icon(
-                    imageVector = Icons.Filled.Stop,
-                    contentDescription = "Stop",
-                    tint = TextPrimary
-                )
+                item { Spacer(Modifier.height(72.dp)) }
             }
         }
     }

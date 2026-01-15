@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 fun EpisodesScreen(
     vm: SearchViewModel,
     player: PlayerManager,
+    holder: PlayerHolderViewModel,
     podcast: PodcastSummaryViewData,
     onBack: () -> Unit
 ) {
@@ -29,23 +30,34 @@ fun EpisodesScreen(
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    var selectedEpisodeId by remember { mutableStateOf<String?>(null) }
-    var isPlaying by remember { mutableStateOf(false) }
-
+    val now by holder.nowPlaying.collectAsState()
     val scope = rememberCoroutineScope()
 
-    fun refresh() {
-        isPlaying = player.isPlaying()
+    LaunchedEffect(player, holder) {
+        player.onPlayingChanged = { playing -> holder.setPlaying(playing) }
+        player.onEnded = { holder.playNextEpisode(player) }
+        player.onError = { holder.playNextEpisode(player) }
     }
 
-    LaunchedEffect(podcast.feedUrl) {
+    LaunchedEffect(podcast.id) {
+        val feed = podcast.feedUrl?.trim().orEmpty()
+        if (feed.isBlank()) {
+            error = "This podcast has no playable RSS feedUrl"
+            episodes = emptyList()
+            return@LaunchedEffect
+        }
+
         loading = true
         error = null
         try {
-            episodes = vm.getEpisodes(podcast.feedUrl)
+            episodes = vm.getEpisodes(feed)
             if (episodes.isEmpty()) error = "No episodes found"
+
+            if (episodes.isNotEmpty()) {
+                holder.setEpisodeQueue(episodes, startIndex = 0)
+            }
         } catch (e: Exception) {
-            error = e.message
+            error = e.message ?: "Failed to load episodes"
         } finally {
             loading = false
         }
@@ -79,110 +91,86 @@ fun EpisodesScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            if (error != null) {
-                Spacer(Modifier.height(6.dp))
-                Text("Error: $error", color = MaterialTheme.colorScheme.error)
-            }
+            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (error != null) Text("Error: $error", color = MaterialTheme.colorScheme.error)
 
             Spacer(Modifier.height(8.dp))
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(episodes) { ep ->
-                    val selected = ep.id == selectedEpisodeId
-                    val playingNow = selected && isPlaying
+                items(episodes, key = { it.id }) { ep ->
+                    val selected = ep.id == now.episodeId
+                    val playingNow = selected && now.isPlaying
 
-                    EpisodeCard(
-                        episode = ep,
-                        player = player,          // ✅ важно
-                        playing = playingNow,
-                        onPlayPause = {
-                            scope.launch {
-                                if (selected) {
-                                    if (player.isPlaying()) player.pause()
-                                    else player.play(player.currentUrl ?: ep.audioUrl)
-                                } else {
-                                    selectedEpisodeId = ep.id
-                                    player.play(ep.audioUrl, key = ep.id)
+                    Card {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(
+                                text = ep.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(ep.pubDateText, style = MaterialTheme.typography.bodySmall)
+
+                            Spacer(Modifier.height(8.dp))
+
+                            Row {
+                                FilledTonalButton(onClick = {
+                                    scope.launch {
+                                        val url = ep.audioUrl.trim()
+                                        if (url.isBlank()) return@launch
+
+                                        val startIndex = episodes.indexOfFirst { it.id == ep.id }.coerceAtLeast(0)
+                                        holder.setEpisodeQueue(episodes, startIndex)
+
+                                        val podcastKey = podcast.feedUrl?.trim()
+                                            .takeIf { !it.isNullOrBlank() } ?: "id:${podcast.id}"
+
+                                        holder.setNowPlaying(
+                                            title = podcast.title,
+                                            author = podcast.author,
+                                            url = url,
+                                            key = podcastKey,
+                                            isPlaying = true,
+                                            episodeId = ep.id,
+                                            episodeTitle = ep.title
+                                        )
+
+                                        player.play(url, key = ep.id)
+                                    }
+                                }) {
+                                    Icon(
+                                        imageVector = if (playingNow) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                        contentDescription = null
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(if (playingNow) "Pause" else "Play")
                                 }
-                                refresh()
+
+                                Spacer(Modifier.width(10.dp))
+
+                                OutlinedButton(onClick = {
+                                    player.stop()
+                                    holder.setPlaying(false)
+                                }) {
+                                    Icon(Icons.Filled.Stop, contentDescription = null)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Stop")
+                                }
                             }
-                        },
-                        onStop = {
-                            player.stop()
-                            selectedEpisodeId = null
-                            refresh()
+
+                            if (selected) {
+                                EpisodeProgressBar(
+                                    player = player,
+                                    episodeId = ep.id,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 8.dp)
+                                )
+                            }
                         }
-                    )
-                }
-
-                item { Spacer(Modifier.height(8.dp)) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun EpisodeCard(
-    episode: EpisodeUi,
-    player: PlayerManager,            // ✅ добавили
-    playing: Boolean,
-    onPlayPause: () -> Unit,
-    onStop: () -> Unit
-) {
-    Card {
-        Column(Modifier.padding(12.dp)) {
-
-            Text(
-                text = episode.title,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-
-            Text(
-                text = episode.pubDateText,
-                style = MaterialTheme.typography.bodySmall
-            )
-
-            Spacer(Modifier.height(6.dp))
-
-            Text(
-                text = episode.description,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
-            )
-
-            Spacer(Modifier.height(8.dp))
-
-            Row {
-                FilledTonalButton(onClick = onPlayPause) {
-                    Icon(
-                        imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = null
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (playing) "Pause" else "Play")
-                }
-
-                Spacer(Modifier.width(10.dp))
-
-                OutlinedButton(onClick = onStop) {
-                    Icon(Icons.Filled.Stop, contentDescription = null)
-                    Spacer(Modifier.width(4.dp))
-                    Text("Stop")
+                    }
                 }
             }
-
-            // ✅ Прогресс бар внутри карточки
-            EpisodeProgressBar(
-                player = player,
-                episodeId = episode.id,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp)
-            )
         }
     }
 }

@@ -1,68 +1,95 @@
 package com.example.superpodcast.ui
 
 import android.content.Context
-import android.media.MediaPlayer
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 
 class PlayerManager(context: Context) {
 
-    private var mp: MediaPlayer? = null
+    private val appContext = context.applicationContext
+
+    private val player: ExoPlayer = ExoPlayer.Builder(appContext)
+        .setMediaSourceFactory(
+            DefaultMediaSourceFactory(appContext)
+                .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy())
+        )
+        .build()
+
     var currentUrl: String? = null
         private set
 
-    // ✅ добавь это
     var currentKey: String? = null
         private set
 
-    private var prepared = false
+    // callbacks наружу
+    var onEnded: (() -> Unit)? = null
+    var onError: ((Throwable) -> Unit)? = null
+    var onPlayingChanged: ((Boolean) -> Unit)? = null
 
-    // ✅ добавили key
+    init {
+        player.addListener(object : Player.Listener {
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                onPlayingChanged?.invoke(isPlaying)
+            }
+
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_ENDED) {
+                    onEnded?.invoke()
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                onError?.invoke(error)
+            }
+        })
+    }
+
     fun play(url: String, key: String? = null) {
-        if (url.isBlank()) return
+        val safeUrl = url.trim()
+        if (safeUrl.isBlank()) return
 
-        // если тот же url — просто start
-        if (currentUrl == url && prepared) {
-            currentKey = key ?: currentKey
-            mp?.start()
+        // тот же трек — продолжить
+        if (currentUrl == safeUrl) {
+            player.playWhenReady = true
+            player.play()
             return
         }
 
-        stop()
-
-        currentUrl = url
+        currentUrl = safeUrl
         currentKey = key
 
-        mp = MediaPlayer().apply {
-            setDataSource(url)
-            setOnPreparedListener {
-                prepared = true
-                start()
-            }
-            setOnErrorListener { _, _, _ ->
-                prepared = false
-                false
-            }
-            prepareAsync()
-        }
+        val item = MediaItem.fromUri(safeUrl)
+        player.setMediaItem(item)
+        player.prepare()
+        player.playWhenReady = true
+        player.play()
     }
 
-    fun pause() { mp?.let { if (it.isPlaying) it.pause() } }
+    fun pause() {
+        player.pause()
+    }
 
     fun stop() {
-        mp?.let {
-            try { it.stop() } catch (_: Exception) {}
-            it.reset()
-            it.release()
-        }
-        mp = null
-        prepared = false
+        player.stop()
         currentUrl = null
-        currentKey = null // ✅
+        currentKey = null
     }
 
-    fun release() = stop()
-    fun isPlaying(): Boolean = mp?.isPlaying == true
-    fun durationMs(): Long = runCatching { mp?.duration ?: 0 }.getOrDefault(0).toLong().coerceAtLeast(0)
-    fun positionMs(): Long = runCatching { mp?.currentPosition ?: 0 }.getOrDefault(0).toLong().coerceAtLeast(0)
-    fun seekTo(ms: Long) { runCatching { mp?.seekTo(ms.coerceAtLeast(0).toInt()) } }
-}
+    fun release() {
+        player.release()
+    }
 
+    fun isPlaying(): Boolean = player.isPlaying
+
+    fun durationMs(): Long = player.duration.coerceAtLeast(0L)
+    fun positionMs(): Long = player.currentPosition.coerceAtLeast(0L)
+
+    fun seekTo(ms: Long) {
+        player.seekTo(ms.coerceAtLeast(0L))
+    }
+}

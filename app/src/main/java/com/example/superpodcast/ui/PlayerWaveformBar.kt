@@ -8,6 +8,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 @Composable
 fun PlayerWaveformBar(
@@ -17,15 +18,16 @@ fun PlayerWaveformBar(
     var posMs by remember { mutableLongStateOf(0L) }
     var durMs by remember { mutableLongStateOf(0L) }
 
-    // обновляем прогресс пока играет / пока есть duration
+    // обновляем пока composable жив
     LaunchedEffect(player) {
-        while (true) {
+        while (isActive) {
             posMs = player.positionMs()
             durMs = player.durationMs()
             delay(250)
         }
     }
 
+    // если трека нет / duration неизвестна — не показываем
     if (durMs <= 0L) return
 
     val fraction = (posMs.toFloat() / durMs.toFloat()).coerceIn(0f, 1f)
@@ -33,9 +35,7 @@ fun PlayerWaveformBar(
     Column(modifier = modifier) {
         Slider(
             value = fraction,
-            onValueChange = { f ->
-                player.seekTo((durMs * f).toLong())
-            }
+            onValueChange = { f -> player.seekTo((durMs * f).toLong()) }
         )
 
         Row(modifier = Modifier.fillMaxWidth()) {

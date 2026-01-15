@@ -29,6 +29,8 @@ data class PodcastCategoryUi(
 
 @Composable
 fun DiscoverScreen(
+    player: PlayerManager,
+    holder: PlayerHolderViewModel,
     onCategoryClick: (PodcastCategoryUi) -> Unit = {},
     onSearchClick: () -> Unit = {}
 ) {
@@ -41,62 +43,77 @@ fun DiscoverScreen(
         PodcastCategoryUi("Tech", "AI & coding", "🤖", Color(0xFF90CAF9)),
     )
 
-    Surface(modifier = Modifier.fillMaxSize(), color = Espresso) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+    Scaffold(
+        containerColor = Espresso,
+        bottomBar = { GlobalMiniPlayerBar(player = player, holder = holder) }
+
+    ) { padding ->
+
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+            color = Espresso
         ) {
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("SuperPodcast", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-                        Text(
-                            "Discover categories & trending shows",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary
-                        )
-                    }
-                    IconButton(onClick = onSearchClick) {
-                        Icon(
-                            imageVector = Icons.Filled.Search,
-                            contentDescription = "Search",
-                            tint = TextPrimary
-                        )
-                    }
-                }
-            }
-
-            item {
-                Text("Podcast Category", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-                Spacer(Modifier.height(10.dp))
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(330.dp)
-                ) {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(2),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(bottom = 4.dp)
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        items(categories) { cat ->
-                            CategoryCard(category = cat, onClick = { onCategoryClick(cat) })
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("SuperPodcast", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+                            Text(
+                                "Discover categories & trending shows",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                        }
+                        IconButton(onClick = onSearchClick) {
+                            Icon(
+                                imageVector = Icons.Filled.Search,
+                                contentDescription = "Search",
+                                tint = TextPrimary
+                            )
                         }
                     }
                 }
-            }
 
-            item {
-                SectionHeader(title = "Trending")
-                TrendingRowItem(title = "The Daily Mindset", author = "Mind Studio", tag = "Mind")
-                TrendingRowItem(title = "Startup Stories", author = "Business Hub", tag = "Business")
-                TrendingRowItem(title = "Gym Power Mix", author = "Fit Cast", tag = "Fitness")
+                item {
+                    Text("Podcast Category", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                    Spacer(Modifier.height(10.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(330.dp)
+                    ) {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(2),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            contentPadding = PaddingValues(bottom = 4.dp)
+                        ) {
+                            items(categories) { cat ->
+                                CategoryCard(category = cat, onClick = { onCategoryClick(cat) })
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    SectionHeader(title = "Trending")
+                    TrendingRowItem(title = "The Daily Mindset", author = "Mind Studio", tag = "Mind")
+                    TrendingRowItem(title = "Startup Stories", author = "Business Hub", tag = "Business")
+                    TrendingRowItem(title = "Gym Power Mix", author = "Fit Cast", tag = "Fitness")
+                }
+
+                // ✅ чтобы контент не прятался под bottomBar
+                item { Spacer(Modifier.height(72.dp)) }
             }
         }
     }
@@ -187,10 +204,7 @@ private fun TrendingRowItem(title: String, author: String, tag: String) {
                 Text(author, color = TextSecondary, style = MaterialTheme.typography.bodySmall)
             }
 
-            Surface(
-                color = Latte,
-                shape = RoundedCornerShape(999.dp)
-            ) {
+            Surface(color = Latte, shape = RoundedCornerShape(999.dp)) {
                 Text(
                     text = tag,
                     color = TextPrimary,
@@ -198,7 +212,6 @@ private fun TrendingRowItem(title: String, author: String, tag: String) {
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                 )
             }
-
         }
     }
 }
